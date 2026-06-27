@@ -18,8 +18,10 @@ package scope
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -501,4 +503,19 @@ func TestPrincipalParsing(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewServiceLimitersRegistersEKS(t *testing.T) {
+	g := NewWithT(t)
+
+	eksLimiter, ok := newServiceLimiters()[eks.ServiceID]
+	g.Expect(ok).To(BeTrue(), "expected an EKS service limiter to be registered")
+	g.Expect(eksLimiter).To(Equal(newGenericServiceLimiter()))
+
+	describeBucket := (*eksLimiter)[0]
+	describeRE := regexp.MustCompile("^" + describeBucket.Operation)
+	g.Expect(describeRE.MatchString("DescribeCluster")).To(BeTrue())
+	g.Expect(describeRE.MatchString("DescribeNodegroup")).To(BeTrue())
+	g.Expect(float64(describeBucket.RefillRate)).To(Equal(20.0))
+	g.Expect(describeBucket.Burst).To(Equal(100))
 }

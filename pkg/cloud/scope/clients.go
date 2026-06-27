@@ -243,15 +243,19 @@ func NewEKSClient(scopeUser cloud.ScopeUsage, session cloud.Session, logger logg
 	eksEndpointResolver := &endpoints.EKSEndpointResolver{
 		MultiServiceEndpointResolver: multiSvcEndpointResolver,
 	}
-	s3Opts := []func(*eks.Options){
+	eksOpts := []func(*eks.Options){
 		func(o *eks.Options) {
 			o.Logger = logger.GetAWSLogger()
 			o.ClientLogMode = awslogs.GetAWSLogLevel(logger.GetLogger())
 			o.EndpointResolverV2 = eksEndpointResolver
 		},
-		eks.WithAPIOptions(awsmetrics.WithMiddlewares(scopeUser.ControllerName(), target), awsmetrics.WithCAPAUserAgentMiddleware()),
+		eks.WithAPIOptions(
+			awsmetrics.WithMiddlewares(scopeUser.ControllerName(), target),
+			awsmetrics.WithCAPAUserAgentMiddleware(),
+			throttle.WithServiceLimiterMiddleware(session.ServiceLimiter(eks.ServiceID)),
+		),
 	}
-	return eks.NewFromConfig(cfg, s3Opts...)
+	return eks.NewFromConfig(cfg, eksOpts...)
 }
 
 // NewIAMClient creates a new IAM API client for a given session.

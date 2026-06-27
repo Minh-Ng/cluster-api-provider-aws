@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
 	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancing"
 	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	"github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
@@ -163,6 +164,7 @@ func getSessionName(region string, clusterScoper cloud.SessionMetadata) string {
 func newServiceLimiters() throttle.ServiceLimiters {
 	return throttle.ServiceLimiters{
 		ec2.ServiceID:                      newEC2ServiceLimiter(),
+		eks.ServiceID:                      newGenericServiceLimiter(),
 		elb.ServiceID:                      newGenericServiceLimiter(),
 		elbv2.ServiceID:                    newGenericServiceLimiter(),
 		resourcegroupstaggingapi.ServiceID: newGenericServiceLimiter(),
