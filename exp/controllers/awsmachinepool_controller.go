@@ -226,6 +226,41 @@ func (r *AWSMachinePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 }
 
+// awsMachinePoolStatusUpdatePredicate filters out update events that only change an
+// AWSMachinePool's status, so the controller does not re-reconcile in response to its own
+// status patches. Changes to spec, deletionTimestamp, annotations or finalizers still
+// trigger reconciliation, as do events for other watched kinds.
+//
+// Note: a type assertion is used (not a TypeMeta Kind comparison) because objects
+// delivered from the controller cache have an empty Kind, which would make a Kind-based
+// guard a no-op.
+var awsMachinePoolStatusUpdatePredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		oldPool, ok := e.ObjectOld.(*expinfrav1.AWSMachinePool)
+		if !ok {
+			return true
+		}
+		newPool, ok := e.ObjectNew.(*expinfrav1.AWSMachinePool)
+		if !ok {
+			return true
+		}
+
+		oldPool = oldPool.DeepCopy()
+		newPool = newPool.DeepCopy()
+
+		// Zero out fields that change on every status write so the comparison
+		// reflects only spec/metadata differences.
+		oldPool.Status = expinfrav1.AWSMachinePoolStatus{}
+		newPool.Status = expinfrav1.AWSMachinePoolStatus{}
+		oldPool.ResourceVersion = ""
+		newPool.ResourceVersion = ""
+		oldPool.ManagedFields = nil
+		newPool.ManagedFields = nil
+
+		return !cmp.Equal(oldPool, newPool)
+	},
+}
+
 func (r *AWSMachinePoolReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
@@ -235,28 +270,7 @@ func (r *AWSMachinePoolReconciler) SetupWithManager(ctx context.Context, mgr ctr
 			handler.EnqueueRequestsFromMapFunc(machinePoolToInfrastructureMapFunc(expinfrav1.GroupVersion.WithKind("AWSMachinePool"))),
 		).
 		WithEventFilter(predicates.ResourceNotPausedAndHasFilterLabel(mgr.GetScheme(), logger.FromContext(ctx).GetLogger(), r.WatchFilterValue)).
-		WithEventFilter(
-			predicate.Funcs{
-				// Avoid reconciling if the event triggering the reconciliation is related to incremental status updates
-				// for AWSMachinePool resources only
-				UpdateFunc: func(e event.UpdateEvent) bool {
-					if e.ObjectOld.GetObjectKind().GroupVersionKind().Kind != "AWSMachinePool" {
-						return true
-					}
-
-					oldCluster := e.ObjectOld.(*expinfrav1.AWSMachinePool).DeepCopy()
-					newCluster := e.ObjectNew.(*expinfrav1.AWSMachinePool).DeepCopy()
-
-					oldCluster.Status = expinfrav1.AWSMachinePoolStatus{}
-					newCluster.Status = expinfrav1.AWSMachinePoolStatus{}
-
-					oldCluster.ObjectMeta.ResourceVersion = ""
-					newCluster.ObjectMeta.ResourceVersion = ""
-
-					return !cmp.Equal(oldCluster, newCluster)
-				},
-			},
-		).
+		WithEventFilter(awsMachinePoolStatusUpdatePredicate).
 		Complete(r)
 }
 

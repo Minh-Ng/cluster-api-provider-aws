@@ -249,6 +249,41 @@ func (r *AWSMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 }
 
+// awsMachineStatusUpdatePredicate filters out update events that only change an
+// AWSMachine's status, so the controller does not re-reconcile in response to its own
+// status patches. Changes to spec, deletionTimestamp, annotations or finalizers still
+// trigger reconciliation, as do events for other watched kinds.
+//
+// Note: a type assertion is used (not a TypeMeta Kind comparison) because objects
+// delivered from the controller cache have an empty Kind, which would make a Kind-based
+// guard a no-op.
+var awsMachineStatusUpdatePredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		oldMachine, ok := e.ObjectOld.(*infrav1.AWSMachine)
+		if !ok {
+			return true
+		}
+		newMachine, ok := e.ObjectNew.(*infrav1.AWSMachine)
+		if !ok {
+			return true
+		}
+
+		oldMachine = oldMachine.DeepCopy()
+		newMachine = newMachine.DeepCopy()
+
+		// Zero out fields that change on every status write so the comparison
+		// reflects only spec/metadata differences.
+		oldMachine.Status = infrav1.AWSMachineStatus{}
+		newMachine.Status = infrav1.AWSMachineStatus{}
+		oldMachine.ResourceVersion = ""
+		newMachine.ResourceVersion = ""
+		oldMachine.ManagedFields = nil
+		newMachine.ManagedFields = nil
+
+		return !cmp.Equal(oldMachine, newMachine)
+	},
+}
+
 func (r *AWSMachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	log := logger.FromContext(ctx)
 	AWSClusterToAWSMachines := r.AWSClusterToAWSMachines(log)
@@ -265,28 +300,7 @@ func (r *AWSMachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Ma
 			handler.EnqueueRequestsFromMapFunc(AWSClusterToAWSMachines),
 		).
 		WithEventFilter(predicates.ResourceHasFilterLabel(mgr.GetScheme(), log.GetLogger(), r.WatchFilterValue)).
-		WithEventFilter(
-			predicate.Funcs{
-				// Avoid reconciling if the event triggering the reconciliation is related to incremental status updates
-				// for AWSMachine resources only
-				UpdateFunc: func(e event.UpdateEvent) bool {
-					if e.ObjectOld.GetObjectKind().GroupVersionKind().Kind != "AWSMachine" {
-						return true
-					}
-
-					oldMachine := e.ObjectOld.(*infrav1.AWSMachine).DeepCopy()
-					newMachine := e.ObjectNew.(*infrav1.AWSMachine).DeepCopy()
-
-					oldMachine.Status = infrav1.AWSMachineStatus{}
-					newMachine.Status = infrav1.AWSMachineStatus{}
-
-					oldMachine.ObjectMeta.ResourceVersion = ""
-					newMachine.ObjectMeta.ResourceVersion = ""
-
-					return !cmp.Equal(oldMachine, newMachine)
-				},
-			},
-		).
+		WithEventFilter(awsMachineStatusUpdatePredicate).
 		Build(r)
 	if err != nil {
 		return err
