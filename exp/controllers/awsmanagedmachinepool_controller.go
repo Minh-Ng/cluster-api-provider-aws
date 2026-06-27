@@ -21,6 +21,7 @@ import (
 	"time"
 
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
+	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,7 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	ekscontrolplanev1 "sigs.k8s.io/cluster-api-provider-aws/v2/controlplane/eks/api/v1beta2"
@@ -62,6 +65,37 @@ type AWSManagedMachinePoolReconciler struct {
 	MaxWaitActiveUpdateDelete    time.Duration
 }
 
+// awsManagedMachinePoolStatusUpdatePredicate filters out update events that only change
+// an AWSManagedMachinePool's status, so the controller does not re-reconcile in response
+// to its own status patches. Changes to spec, deletionTimestamp, annotations or finalizers
+// still trigger reconciliation, as do events for other watched kinds.
+var awsManagedMachinePoolStatusUpdatePredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		oldPool, ok := e.ObjectOld.(*expinfrav1.AWSManagedMachinePool)
+		if !ok {
+			return true
+		}
+		newPool, ok := e.ObjectNew.(*expinfrav1.AWSManagedMachinePool)
+		if !ok {
+			return true
+		}
+
+		oldPool = oldPool.DeepCopy()
+		newPool = newPool.DeepCopy()
+
+		// Zero out fields that change on every status write so the comparison
+		// reflects only spec/metadata differences.
+		oldPool.Status = expinfrav1.AWSManagedMachinePoolStatus{}
+		newPool.Status = expinfrav1.AWSManagedMachinePoolStatus{}
+		oldPool.ResourceVersion = ""
+		newPool.ResourceVersion = ""
+		oldPool.ManagedFields = nil
+		newPool.ManagedFields = nil
+
+		return !cmp.Equal(oldPool, newPool)
+	},
+}
+
 // SetupWithManager is used to setup the controller.
 func (r *AWSManagedMachinePoolReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	log := logger.FromContext(ctx)
@@ -75,6 +109,7 @@ func (r *AWSManagedMachinePoolReconciler) SetupWithManager(ctx context.Context, 
 		For(&expinfrav1.AWSManagedMachinePool{}).
 		WithOptions(options).
 		WithEventFilter(predicates.ResourceHasFilterLabel(mgr.GetScheme(), log.GetLogger(), r.WatchFilterValue)).
+		WithEventFilter(awsManagedMachinePoolStatusUpdatePredicate).
 		Watches(
 			&clusterv1.MachinePool{},
 			handler.EnqueueRequestsFromMapFunc(machinePoolToInfrastructureMapFunc(gvk)),

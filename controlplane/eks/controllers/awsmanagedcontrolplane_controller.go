@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,7 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -164,6 +167,37 @@ func (r *AWSManagedControlPlaneReconciler) getSecurityGroupService(scope *scope.
 	return securitygroup.NewService(scope, securityGroupRolesForControlPlane(scope))
 }
 
+// awsManagedControlPlaneStatusUpdatePredicate filters out update events that only change
+// an AWSManagedControlPlane's status, so the controller does not re-reconcile in response
+// to its own status patches. Changes to spec, deletionTimestamp, annotations or finalizers
+// still trigger reconciliation, as do events for other watched kinds.
+var awsManagedControlPlaneStatusUpdatePredicate = predicate.Funcs{
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		oldACP, ok := e.ObjectOld.(*ekscontrolplanev1.AWSManagedControlPlane)
+		if !ok {
+			return true
+		}
+		newACP, ok := e.ObjectNew.(*ekscontrolplanev1.AWSManagedControlPlane)
+		if !ok {
+			return true
+		}
+
+		oldACP = oldACP.DeepCopy()
+		newACP = newACP.DeepCopy()
+
+		// Zero out fields that change on every status write so the comparison
+		// reflects only spec/metadata differences.
+		oldACP.Status = ekscontrolplanev1.AWSManagedControlPlaneStatus{}
+		newACP.Status = ekscontrolplanev1.AWSManagedControlPlaneStatus{}
+		oldACP.ResourceVersion = ""
+		newACP.ResourceVersion = ""
+		oldACP.ManagedFields = nil
+		newACP.ManagedFields = nil
+
+		return !cmp.Equal(oldACP, newACP)
+	},
+}
+
 // SetupWithManager is used to setup the controller.
 func (r *AWSManagedControlPlaneReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	log := logger.FromContext(ctx)
@@ -173,6 +207,7 @@ func (r *AWSManagedControlPlaneReconciler) SetupWithManager(ctx context.Context,
 		For(awsManagedControlPlane).
 		WithOptions(options).
 		WithEventFilter(predicates.ResourceHasFilterLabel(mgr.GetScheme(), log.GetLogger(), r.WatchFilterValue)).
+		WithEventFilter(awsManagedControlPlaneStatusUpdatePredicate).
 		Build(r)
 	if err != nil {
 		return fmt.Errorf("failed setting up the AWSManagedControlPlane controller manager: %w", err)
