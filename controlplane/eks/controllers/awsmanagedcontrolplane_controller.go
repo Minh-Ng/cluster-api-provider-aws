@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,9 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -56,6 +53,7 @@ import (
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/cloud/services/securitygroup"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/logger"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/util/paused"
+	capapredicates "sigs.k8s.io/cluster-api-provider-aws/v2/util/predicates"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
@@ -169,34 +167,12 @@ func (r *AWSManagedControlPlaneReconciler) getSecurityGroupService(scope *scope.
 
 // awsManagedControlPlaneStatusUpdatePredicate filters out update events that only change
 // an AWSManagedControlPlane's status, so the controller does not re-reconcile in response
-// to its own status patches. Changes to spec, deletionTimestamp, annotations or finalizers
-// still trigger reconciliation, as do events for other watched kinds.
-var awsManagedControlPlaneStatusUpdatePredicate = predicate.Funcs{
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		oldACP, ok := e.ObjectOld.(*ekscontrolplanev1.AWSManagedControlPlane)
-		if !ok {
-			return true
-		}
-		newACP, ok := e.ObjectNew.(*ekscontrolplanev1.AWSManagedControlPlane)
-		if !ok {
-			return true
-		}
-
-		oldACP = oldACP.DeepCopy()
-		newACP = newACP.DeepCopy()
-
-		// Zero out fields that change on every status write so the comparison
-		// reflects only spec/metadata differences.
-		oldACP.Status = ekscontrolplanev1.AWSManagedControlPlaneStatus{}
-		newACP.Status = ekscontrolplanev1.AWSManagedControlPlaneStatus{}
-		oldACP.ResourceVersion = ""
-		newACP.ResourceVersion = ""
-		oldACP.ManagedFields = nil
-		newACP.ManagedFields = nil
-
-		return !cmp.Equal(oldACP, newACP)
-	},
-}
+// to its own status patches.
+var awsManagedControlPlaneStatusUpdatePredicate = capapredicates.StatusOnlyUpdateFilter(func(m *ekscontrolplanev1.AWSManagedControlPlane) *ekscontrolplanev1.AWSManagedControlPlane {
+	m = m.DeepCopy()
+	m.Status = ekscontrolplanev1.AWSManagedControlPlaneStatus{}
+	return m
+})
 
 // SetupWithManager is used to setup the controller.
 func (r *AWSManagedControlPlaneReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
@@ -276,6 +252,11 @@ func (r *AWSManagedControlPlaneReconciler) Reconcile(ctx context.Context, req ct
 	log = log.WithValues("cluster", klog.KObj(cluster))
 
 	if isPaused, conditionChanged, err := paused.EnsurePausedCondition(ctx, r.Client, cluster, awsManagedControlPlane); err != nil || isPaused || conditionChanged {
+		// The Paused condition patch is a status-only update that the event filter
+		// drops, so requeue explicitly instead of relying on the patch event.
+		if err == nil && conditionChanged && !isPaused {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 

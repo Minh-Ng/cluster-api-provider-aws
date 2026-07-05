@@ -40,9 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
@@ -60,6 +58,7 @@ import (
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/cloud/services/userdata"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/logger"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/util/paused"
+	capapredicates "sigs.k8s.io/cluster-api-provider-aws/v2/util/predicates"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
@@ -207,6 +206,11 @@ func (r *AWSMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	infrav1.SetDefaults_AWSMachineSpec(&awsMachine.Spec)
 
 	if isPaused, conditionChanged, err := paused.EnsurePausedCondition(ctx, r.Client, cluster, awsMachine); err != nil || isPaused || conditionChanged {
+		// The Paused condition patch is a status-only update that the event filter
+		// drops, so requeue explicitly instead of relying on the patch event.
+		if err == nil && conditionChanged && !isPaused {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -251,38 +255,12 @@ func (r *AWSMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // awsMachineStatusUpdatePredicate filters out update events that only change an
 // AWSMachine's status, so the controller does not re-reconcile in response to its own
-// status patches. Changes to spec, deletionTimestamp, annotations or finalizers still
-// trigger reconciliation, as do events for other watched kinds.
-//
-// Note: a type assertion is used (not a TypeMeta Kind comparison) because objects
-// delivered from the controller cache have an empty Kind, which would make a Kind-based
-// guard a no-op.
-var awsMachineStatusUpdatePredicate = predicate.Funcs{
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		oldMachine, ok := e.ObjectOld.(*infrav1.AWSMachine)
-		if !ok {
-			return true
-		}
-		newMachine, ok := e.ObjectNew.(*infrav1.AWSMachine)
-		if !ok {
-			return true
-		}
-
-		oldMachine = oldMachine.DeepCopy()
-		newMachine = newMachine.DeepCopy()
-
-		// Zero out fields that change on every status write so the comparison
-		// reflects only spec/metadata differences.
-		oldMachine.Status = infrav1.AWSMachineStatus{}
-		newMachine.Status = infrav1.AWSMachineStatus{}
-		oldMachine.ResourceVersion = ""
-		newMachine.ResourceVersion = ""
-		oldMachine.ManagedFields = nil
-		newMachine.ManagedFields = nil
-
-		return !cmp.Equal(oldMachine, newMachine)
-	},
-}
+// status patches.
+var awsMachineStatusUpdatePredicate = capapredicates.StatusOnlyUpdateFilter(func(m *infrav1.AWSMachine) *infrav1.AWSMachine {
+	m = m.DeepCopy()
+	m.Status = infrav1.AWSMachineStatus{}
+	return m
+})
 
 func (r *AWSMachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	log := logger.FromContext(ctx)

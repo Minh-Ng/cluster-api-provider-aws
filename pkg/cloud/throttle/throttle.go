@@ -84,7 +84,7 @@ func (o *OperationLimiter) getLimiter() *rate.Limiter {
 // ReviewResponse will review the limits of a Request's response for AWS SDK V2.
 func (s ServiceLimiter) ReviewResponse(ctx context.Context, errorCode string) {
 	switch errorCode {
-	case "Throttling", "RequestLimitExceeded":
+	case "Throttling", "RequestLimitExceeded", "ThrottlingException", "TooManyRequestsException":
 		if ol, ok := s.matchRequest(ctx); ok {
 			ol.limiter.ResetTokens()
 		}

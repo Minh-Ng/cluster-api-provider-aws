@@ -55,6 +55,11 @@ func TestAWSMachineStatusUpdatePredicate(t *testing.T) {
 			enqueue: false,
 		},
 		{
+			name:    "resync event with identical object triggers reconcile",
+			mutate:  func(o *infrav1.AWSMachine) {},
+			enqueue: true,
+		},
+		{
 			name: "spec change triggers reconcile",
 			mutate: func(o *infrav1.AWSMachine) {
 				o.Status.Ready = true

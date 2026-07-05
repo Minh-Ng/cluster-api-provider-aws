@@ -54,6 +54,11 @@ func TestAWSMachinePoolStatusUpdatePredicate(t *testing.T) {
 			enqueue: false,
 		},
 		{
+			name:    "resync event with identical object triggers reconcile",
+			mutate:  func(o *expinfrav1.AWSMachinePool) {},
+			enqueue: true,
+		},
+		{
 			name: "spec change triggers reconcile",
 			mutate: func(o *expinfrav1.AWSMachinePool) {
 				o.Status.Replicas = 3

@@ -57,6 +57,11 @@ func TestAWSManagedControlPlaneStatusUpdatePredicate(t *testing.T) {
 			enqueue: false,
 		},
 		{
+			name:    "resync event with identical object triggers reconcile",
+			mutate:  func(o *ekscontrolplanev1.AWSManagedControlPlane) {},
+			enqueue: true,
+		},
+		{
 			name: "spec change triggers reconcile",
 			mutate: func(o *ekscontrolplanev1.AWSManagedControlPlane) {
 				o.Status.Ready = true

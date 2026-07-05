@@ -21,7 +21,6 @@ import (
 	"time"
 
 	autoscalingtypes "github.com/aws/aws-sdk-go-v2/service/autoscaling/types"
-	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,9 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	ekscontrolplanev1 "sigs.k8s.io/cluster-api-provider-aws/v2/controlplane/eks/api/v1beta2"
@@ -47,6 +44,7 @@ import (
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/cloud/services/eks"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/logger"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/util/paused"
+	capapredicates "sigs.k8s.io/cluster-api-provider-aws/v2/util/predicates"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
@@ -67,34 +65,12 @@ type AWSManagedMachinePoolReconciler struct {
 
 // awsManagedMachinePoolStatusUpdatePredicate filters out update events that only change
 // an AWSManagedMachinePool's status, so the controller does not re-reconcile in response
-// to its own status patches. Changes to spec, deletionTimestamp, annotations or finalizers
-// still trigger reconciliation, as do events for other watched kinds.
-var awsManagedMachinePoolStatusUpdatePredicate = predicate.Funcs{
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		oldPool, ok := e.ObjectOld.(*expinfrav1.AWSManagedMachinePool)
-		if !ok {
-			return true
-		}
-		newPool, ok := e.ObjectNew.(*expinfrav1.AWSManagedMachinePool)
-		if !ok {
-			return true
-		}
-
-		oldPool = oldPool.DeepCopy()
-		newPool = newPool.DeepCopy()
-
-		// Zero out fields that change on every status write so the comparison
-		// reflects only spec/metadata differences.
-		oldPool.Status = expinfrav1.AWSManagedMachinePoolStatus{}
-		newPool.Status = expinfrav1.AWSManagedMachinePoolStatus{}
-		oldPool.ResourceVersion = ""
-		newPool.ResourceVersion = ""
-		oldPool.ManagedFields = nil
-		newPool.ManagedFields = nil
-
-		return !cmp.Equal(oldPool, newPool)
-	},
-}
+// to its own status patches.
+var awsManagedMachinePoolStatusUpdatePredicate = capapredicates.StatusOnlyUpdateFilter(func(m *expinfrav1.AWSManagedMachinePool) *expinfrav1.AWSManagedMachinePool {
+	m = m.DeepCopy()
+	m.Status = expinfrav1.AWSManagedMachinePoolStatus{}
+	return m
+})
 
 // SetupWithManager is used to setup the controller.
 func (r *AWSManagedMachinePoolReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
@@ -158,6 +134,11 @@ func (r *AWSManagedMachinePoolReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	if isPaused, conditionChanged, err := paused.EnsurePausedCondition(ctx, r.Client, cluster, awsPool); err != nil || isPaused || conditionChanged {
+		// The Paused condition patch is a status-only update that the event filter
+		// drops, so requeue explicitly instead of relying on the patch event.
+		if err == nil && conditionChanged && !isPaused {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 

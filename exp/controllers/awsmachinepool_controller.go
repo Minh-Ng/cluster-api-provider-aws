@@ -37,9 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
@@ -54,6 +52,7 @@ import (
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/cloud/services/ec2"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/cloud/services/s3"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/logger"
+	capapredicates "sigs.k8s.io/cluster-api-provider-aws/v2/util/predicates"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
@@ -228,38 +227,12 @@ func (r *AWSMachinePoolReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 // awsMachinePoolStatusUpdatePredicate filters out update events that only change an
 // AWSMachinePool's status, so the controller does not re-reconcile in response to its own
-// status patches. Changes to spec, deletionTimestamp, annotations or finalizers still
-// trigger reconciliation, as do events for other watched kinds.
-//
-// Note: a type assertion is used (not a TypeMeta Kind comparison) because objects
-// delivered from the controller cache have an empty Kind, which would make a Kind-based
-// guard a no-op.
-var awsMachinePoolStatusUpdatePredicate = predicate.Funcs{
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		oldPool, ok := e.ObjectOld.(*expinfrav1.AWSMachinePool)
-		if !ok {
-			return true
-		}
-		newPool, ok := e.ObjectNew.(*expinfrav1.AWSMachinePool)
-		if !ok {
-			return true
-		}
-
-		oldPool = oldPool.DeepCopy()
-		newPool = newPool.DeepCopy()
-
-		// Zero out fields that change on every status write so the comparison
-		// reflects only spec/metadata differences.
-		oldPool.Status = expinfrav1.AWSMachinePoolStatus{}
-		newPool.Status = expinfrav1.AWSMachinePoolStatus{}
-		oldPool.ResourceVersion = ""
-		newPool.ResourceVersion = ""
-		oldPool.ManagedFields = nil
-		newPool.ManagedFields = nil
-
-		return !cmp.Equal(oldPool, newPool)
-	},
-}
+// status patches.
+var awsMachinePoolStatusUpdatePredicate = capapredicates.StatusOnlyUpdateFilter(func(m *expinfrav1.AWSMachinePool) *expinfrav1.AWSMachinePool {
+	m = m.DeepCopy()
+	m.Status = expinfrav1.AWSMachinePoolStatus{}
+	return m
+})
 
 func (r *AWSMachinePoolReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
